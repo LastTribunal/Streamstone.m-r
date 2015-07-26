@@ -8,13 +8,13 @@ namespace SimpleCQRS
         private bool _activated;
         private Guid _id;
 
-        private void Apply(InventoryItemCreated e)
+        public void Apply(InventoryItemCreated e)
         {
             _id = e.Id;
             _activated = true;
         }
 
-        private void Apply(InventoryItemDeactivated e)
+        public void Apply(InventoryItemDeactivated e)
         {
             _activated = false;
         }
@@ -90,8 +90,13 @@ namespace SimpleCQRS
         // push atomic aggregate changes to local history for further processing (EventStore.SaveEvents)
         private void ApplyChange(Event @event, bool isNew)
         {
-            this.AsDynamic().Apply(@event);
+            ((dynamic)this).Apply((dynamic)@event);
             if(isNew) _changes.Add(@event);
+        }
+
+        public void Apply(Event e)
+        {
+            // no-op
         }
     }
 
@@ -123,5 +128,4 @@ namespace SimpleCQRS
             return obj;
         }
     }
-
 }

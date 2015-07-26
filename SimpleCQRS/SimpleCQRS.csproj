@@ -65,7 +65,6 @@
     <Compile Include="Domain.cs" />
     <Compile Include="EventStore.cs" />
     <Compile Include="FakeBus.cs" />
-    <Compile Include="InfrastructureCrap.DontBotherReadingItsNotImportant.cs" />
     <Compile Include="AssemblyInfo.cs" />
     <Compile Include="Commands.cs" />
     <Compile Include="Events.cs" />
