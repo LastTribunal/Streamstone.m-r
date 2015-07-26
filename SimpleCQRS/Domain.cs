@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace SimpleCQRS
 {
@@ -92,6 +93,7 @@ namespace SimpleCQRS
         {
             ((dynamic)this).Apply((dynamic)@event);
             if(isNew) _changes.Add(@event);
+            Version++;
         }
 
         public void Apply(Event e)
@@ -117,7 +119,7 @@ namespace SimpleCQRS
 
         public void Save(AggregateRoot aggregate, int expectedVersion)
         {
-            _storage.SaveEvents(aggregate.Id, aggregate.GetUncommittedChanges(), expectedVersion);
+            _storage.SaveEvents(aggregate.Id, aggregate.GetUncommittedChanges().ToArray(), expectedVersion);
         }
 
         public T GetById(Guid id)

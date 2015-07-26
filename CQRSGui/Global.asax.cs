@@ -4,6 +4,9 @@ using System.Linq;
 using System.Web;
 using System.Web.Mvc;
 using System.Web.Routing;
+
+using Microsoft.WindowsAzure.Storage;
+
 using SimpleCQRS;
 
 namespace CQRSGui
@@ -33,7 +36,11 @@ namespace CQRSGui
 
             var bus = new FakeBus();
 
-            var storage = new EventStore(bus);
+            var client = CloudStorageAccount.DevelopmentStorageAccount.CreateCloudTableClient();
+            var table = client.GetTableReference("Streams");
+            table.CreateIfNotExists();
+
+            var storage = new EventStore(table, bus);
             var rep = new Repository<InventoryItem>(storage);
             var commands = new InventoryCommandHandlers(rep);
             bus.RegisterHandler<CheckInItemsToInventory>(commands.Handle);

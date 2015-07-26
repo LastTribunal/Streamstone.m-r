@@ -60,7 +60,7 @@ namespace SimpleCQRS
     {
         public void Handle(InventoryItemCreated message)
         {
-            BullShitDatabase.details.Add(message.Id, new InventoryItemDetailsDto(message.Id, message.Name, 0,0));
+            BullShitDatabase.details.Add(message.Id, new InventoryItemDetailsDto(message.Id, message.Name, 0, message.Version));
         }
 
         public void Handle(InventoryItemRenamed message)

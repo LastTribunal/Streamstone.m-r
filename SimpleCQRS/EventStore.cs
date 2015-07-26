@@ -2,57 +2,31 @@
 using System.Collections.Generic;
 using System.Linq;
 
+using Streamstone;
+using Newtonsoft.Json;
+using Microsoft.WindowsAzure.Storage.Table;
+
 namespace SimpleCQRS
 {
     public interface IEventStore
     {
-        void SaveEvents(Guid aggregateId, IEnumerable<Event> events, int expectedVersion);
+        void SaveEvents(Guid aggregateId, Event[] events, int expectedVersion);
         List<Event> GetEventsForAggregate(Guid aggregateId);
     }
 
     public class EventStore : IEventStore
     {
+        private readonly CloudTable _table;
         private readonly IEventPublisher _publisher;
 
-        private struct EventDescriptor
-        {
-
-            public readonly Event EventData;
-            public readonly Guid Id;
-            public readonly int Version;
-
-            public EventDescriptor(Guid id, Event eventData, int version)
-            {
-                EventData = eventData;
-                Version = version;
-                Id = id;
-            }
-        }
-
-        public EventStore(IEventPublisher publisher)
+        public EventStore(CloudTable table, IEventPublisher publisher)
         {
             _publisher = publisher;
+            _table = table;
         }
 
-        private readonly Dictionary<Guid, List<EventDescriptor>> _current = new Dictionary<Guid, List<EventDescriptor>>();
-
-        public void SaveEvents(Guid aggregateId, IEnumerable<Event> events, int expectedVersion)
+        public void SaveEvents(Guid aggregateId, Event[] events, int expectedVersion)
         {
-            List<EventDescriptor> eventDescriptors;
-
-            // try to get event descriptors list for given aggregate id
-            // otherwise -> create empty dictionary
-            if(!_current.TryGetValue(aggregateId, out eventDescriptors))
-            {
-                eventDescriptors = new List<EventDescriptor>();
-                _current.Add(aggregateId,eventDescriptors);
-            }
-            // check whether latest event version matches current aggregate version
-            // otherwise -> throw exception
-            else if(eventDescriptors[eventDescriptors.Count - 1].Version != expectedVersion && expectedVersion != -1)
-            {
-                throw new ConcurrencyException();
-            }
             var i = expectedVersion;
 
             // iterate through current aggregate events increasing version with each processed event
@@ -60,10 +34,30 @@ namespace SimpleCQRS
             {
                 i++;
                 @event.Version = i;
+            }
 
-                // push event to the event descriptors list for current aggregate
-                eventDescriptors.Add(new EventDescriptor(aggregateId,@event,i));
+            var paritionKey = aggregateId.ToString("D");
+            var partition = new Partition(_table, paritionKey);
+  
+            var existent = Stream.TryOpen(partition);
+            var stream = existent.Found
+                ? existent.Stream
+                : new Stream(partition);
 
+            if (stream.Version != expectedVersion)
+                throw new ConcurrencyException();
+
+            try
+            {
+                Stream.Write(stream, events.Select(ToEventData).ToArray());
+            }
+            catch (ConcurrencyConflictException e)
+            {
+                throw new ConcurrencyException();
+            }
+
+            foreach (var @event in events)
+            {
                 // publish current event to the bus for further processing by subscribers
                 _publisher.Publish(@event);
             }
@@ -71,16 +65,42 @@ namespace SimpleCQRS
 
         // collect all processed events for given aggregate and return them as a list
         // used to build up an aggregate from its history (Domain.LoadsFromHistory)
-        public  List<Event> GetEventsForAggregate(Guid aggregateId)
+        public List<Event> GetEventsForAggregate(Guid aggregateId)
         {
-            List<EventDescriptor> eventDescriptors;
-
-            if (!_current.TryGetValue(aggregateId, out eventDescriptors))
+            var paritionKey = aggregateId.ToString("D");
+            var partition = new Partition(_table, paritionKey);
+            
+            if (!Stream.Exists(partition))
             {
                 throw new AggregateNotFoundException();
             }
 
-            return eventDescriptors.Select(desc => desc.EventData).ToList();
+            return Stream.Read<EventEntity>(partition).Events.Select(ToEvent).ToList();
+        }
+
+        static Event ToEvent(EventEntity e)
+        {
+            return (Event) JsonConvert.DeserializeObject(e.Data, Type.GetType(e.Type));
+        }
+
+        static EventData ToEventData(Event e)
+        {
+            var id = Guid.NewGuid();
+
+            var properties = new
+            {
+                Id = id,
+                Type = e.GetType().FullName,
+                Data = JsonConvert.SerializeObject(e)
+            };
+
+            return new EventData(EventId.From(id), EventProperties.From(properties));
+        }
+
+        class EventEntity : TableEntity
+        {
+            public string Type { get; set; }
+            public string Data { get; set; }
         }
     }
 

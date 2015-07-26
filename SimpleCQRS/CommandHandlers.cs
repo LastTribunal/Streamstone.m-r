@@ -14,7 +14,7 @@ namespace SimpleCQRS
         public void Handle(CreateInventoryItem message)
         {
             var item = new InventoryItem(message.InventoryItemId, message.Name);
-            _repository.Save(item, -1);
+            _repository.Save(item, 0);
         }
 
         public void Handle(DeactivateInventoryItem message)
