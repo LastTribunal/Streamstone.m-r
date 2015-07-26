@@ -17,9 +17,9 @@ namespace SimpleCQRS
     public class EventStore : IEventStore
     {
         private readonly CloudTable _table;
-        private readonly IEventPublisher _publisher;
+        private readonly IProjectionPublisher _publisher;
 
-        public EventStore(CloudTable table, IEventPublisher publisher)
+        public EventStore(CloudTable table, IProjectionPublisher publisher)
         {
             _publisher = publisher;
             _table = table;
@@ -36,8 +36,7 @@ namespace SimpleCQRS
                 @event.Version = i;
             }
 
-            var paritionKey = aggregateId.ToString("D");
-            var partition = new Partition(_table, paritionKey);
+            var partition = Partition(aggregateId);
   
             var existent = Stream.TryOpen(partition);
             var stream = existent.Found
@@ -49,17 +48,12 @@ namespace SimpleCQRS
 
             try
             {
-                Stream.Write(stream, events.Select(ToEventData).ToArray());
+                var projections = events.Select(e => _publisher.Publish(e));
+                Stream.Write(stream, events.Zip(projections, ToEventData).ToArray());
             }
-            catch (ConcurrencyConflictException e)
+            catch (ConcurrencyConflictException)
             {
                 throw new ConcurrencyException();
-            }
-
-            foreach (var @event in events)
-            {
-                // publish current event to the bus for further processing by subscribers
-                _publisher.Publish(@event);
             }
         }
 
@@ -67,8 +61,7 @@ namespace SimpleCQRS
         // used to build up an aggregate from its history (Domain.LoadsFromHistory)
         public List<Event> GetEventsForAggregate(Guid aggregateId)
         {
-            var paritionKey = aggregateId.ToString("D");
-            var partition = new Partition(_table, paritionKey);
+            var partition = Partition(aggregateId);
             
             if (!Stream.Exists(partition))
             {
@@ -78,12 +71,17 @@ namespace SimpleCQRS
             return Stream.Read<EventEntity>(partition).Events.Select(ToEvent).ToList();
         }
 
+        Partition Partition(Guid aggregateId)
+        {
+            return new Partition(_table, "Items|" + aggregateId.ToString("D"));
+        }
+
         static Event ToEvent(EventEntity e)
         {
             return (Event) JsonConvert.DeserializeObject(e.Data, Type.GetType(e.Type));
         }
 
-        static EventData ToEventData(Event e)
+        static EventData ToEventData(Event e, IEnumerable<Include> includes)
         {
             var id = Guid.NewGuid();
 
@@ -94,7 +92,11 @@ namespace SimpleCQRS
                 Data = JsonConvert.SerializeObject(e)
             };
 
-            return new EventData(EventId.From(id), EventProperties.From(properties));
+            return new EventData(
+                EventId.From(id), 
+                EventProperties.From(properties), 
+                EventIncludes.From(includes)
+            );
         }
 
         class EventEntity : TableEntity

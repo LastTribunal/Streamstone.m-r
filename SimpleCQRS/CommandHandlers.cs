@@ -2,7 +2,12 @@
 
 namespace SimpleCQRS
 {
-    public class InventoryCommandHandlers
+    public class InventoryCommandHandlers : 
+        Handles<CreateInventoryItem>, 
+        Handles<DeactivateInventoryItem>, 
+        Handles<RemoveItemsFromInventory>,
+        Handles<CheckInItemsToInventory>,
+        Handles<RenameInventoryItem>
     {
         private readonly IRepository<InventoryItem> _repository;
 

@@ -1,5 +1,11 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
+
+using Streamstone;
+using Streamstone.Utility;
+
+using Microsoft.WindowsAzure.Storage.Table;
 
 namespace SimpleCQRS
 {
@@ -11,10 +17,10 @@ namespace SimpleCQRS
 
     public class InventoryItemDetailsDto
     {
-        public Guid Id;
-        public string Name;
-        public int CurrentCount;
-        public int Version;
+        public readonly Guid Id;
+        public readonly string Name;
+        public readonly int CurrentCount;
+        public readonly int Version;
 
         public InventoryItemDetailsDto(Guid id, string name, int currentCount, int version)
         {
@@ -27,8 +33,8 @@ namespace SimpleCQRS
 
     public class InventoryItemListDto
     {
-        public Guid Id;
-        public string Name;
+        public readonly Guid Id;
+        public readonly string Name;
 
         public InventoryItemListDto(Guid id, string name)
         {
@@ -37,87 +43,144 @@ namespace SimpleCQRS
         }
     }
 
-    public class InventoryListView : Handles<InventoryItemCreated>, Handles<InventoryItemRenamed>, Handles<InventoryItemDeactivated>
+    public class InventoryItemProjection : 
+        Projects<InventoryItemCreated>, 
+        Projects<InventoryItemDeactivated>, 
+        Projects<InventoryItemRenamed>, 
+        Projects<ItemsRemovedFromInventory>, 
+        Projects<ItemsCheckedInToInventory>
     {
-        public void Handle(InventoryItemCreated message)
+        readonly CloudTable table;
+        readonly string partition;
+
+        public InventoryItemProjection(CloudTable table, string partition)
         {
-            BullShitDatabase.list.Add(new InventoryItemListDto(message.Id, message.Name));
+            this.table = table;
+            this.partition = partition;
         }
 
-        public void Handle(InventoryItemRenamed message)
+        public IEnumerable<Include> Project(InventoryItemCreated @event)
         {
-            var item = BullShitDatabase.list.Find(x => x.Id == message.Id);
-            item.Name = message.NewName;
+            yield return Include.Insert(new InventoryItemEntity(@event.Id)
+            {
+                Name = @event.Name,
+                Version = @event.Version
+            });
         }
 
-        public void Handle(InventoryItemDeactivated message)
+        public IEnumerable<Include> Project(InventoryItemRenamed @event)
         {
-            BullShitDatabase.list.RemoveAll(x => x.Id == message.Id);
+            var entity = GetItemEntity(@event.Id);
+
+            yield return Include.Replace(new InventoryItemEntity(entity)
+            {
+                Name = @event.NewName,
+                Version = @event.Version
+            });
+        }
+
+        public IEnumerable<Include> Project(ItemsRemovedFromInventory @event)
+        {
+            var entity = GetItemEntity(@event.Id);
+
+            yield return Include.Replace(new InventoryItemEntity(entity)
+            {
+                CurrentCount = entity.CurrentCount - @event.Count,
+                Version = @event.Version
+            });
+        }
+
+        public IEnumerable<Include> Project(ItemsCheckedInToInventory @event)
+        {
+            var entity = GetItemEntity(@event.Id);
+
+            yield return Include.Replace(new InventoryItemEntity(entity)
+            {
+                CurrentCount = entity.CurrentCount + @event.Count,
+                Version = @event.Version
+            });
+        }
+
+        public IEnumerable<Include> Project(InventoryItemDeactivated @event)        
+        {
+            var entity = GetItemEntity(@event.Id);
+            yield return Include.Delete(new InventoryItemEntity(entity));
+        }
+
+        private InventoryItemEntity GetItemEntity(Guid id)
+        {
+            var entities = table.CreateQuery<InventoryItemEntity>()
+                 .Where(x => x.PartitionKey == partition)
+                 .Where(x => x.RowKey == InventoryItemEntity.EntityRowKey(id))
+                 .ToList();
+
+            if (entities.Count == 0)
+                throw new InvalidOperationException("did not find the original inventory this shouldnt happen");
+
+            return entities[0];
         }
     }
 
-    public class InvenotryItemDetailView : Handles<InventoryItemCreated>, Handles<InventoryItemDeactivated>, Handles<InventoryItemRenamed>, Handles<ItemsRemovedFromInventory>, Handles<ItemsCheckedInToInventory>
+    class InventoryItemEntity : TableEntity
     {
-        public void Handle(InventoryItemCreated message)
+        public const string Prefix = "item|";
+
+        public InventoryItemEntity()
+        {}
+
+        public InventoryItemEntity(Guid id)
         {
-            BullShitDatabase.details.Add(message.Id, new InventoryItemDetailsDto(message.Id, message.Name, 0, message.Version));
+            Id = id;
+            RowKey = EntityRowKey(id);
         }
 
-        public void Handle(InventoryItemRenamed message)
+        public InventoryItemEntity(InventoryItemEntity from) 
+            : this(from.Id)
         {
-            InventoryItemDetailsDto d = GetDetailsItem(message.Id);
-            d.Name = message.NewName;
-            d.Version = message.Version;
+            Name = from.Name;
+            CurrentCount = from.CurrentCount;
+            Version = from.Version;
+            ETag = from.ETag;
         }
 
-        private InventoryItemDetailsDto GetDetailsItem(Guid id)
+        public static string EntityRowKey(Guid id)
         {
-            InventoryItemDetailsDto d;
-
-            if(!BullShitDatabase.details.TryGetValue(id, out d))
-            {
-                throw new InvalidOperationException("did not find the original inventory this shouldnt happen");
-            }
-
-            return d;
+            return Prefix + id.ToString("D");
         }
 
-        public void Handle(ItemsRemovedFromInventory message)
-        {
-            InventoryItemDetailsDto d = GetDetailsItem(message.Id);
-            d.CurrentCount -= message.Count;
-            d.Version = message.Version;
-        }
-
-        public void Handle(ItemsCheckedInToInventory message)
-        {
-            InventoryItemDetailsDto d = GetDetailsItem(message.Id);
-            d.CurrentCount += message.Count;
-            d.Version = message.Version;
-        }
-
-        public void Handle(InventoryItemDeactivated message)
-        {
-            BullShitDatabase.details.Remove(message.Id);
-        }
+        public Guid Id          { get; set; }
+        public string Name      { get; set; }
+        public int CurrentCount { get; set; }
+        public int Version      { get; set; }
     }
 
     public class ReadModelFacade : IReadModelFacade
     {
+        readonly CloudTable table;
+        readonly string partition;
+
+        public ReadModelFacade(CloudTable table, string partition)
+        {
+            this.table = table;
+            this.partition = partition;
+        }
+
         public IEnumerable<InventoryItemListDto> GetInventoryItems()
         {
-            return BullShitDatabase.list;
+            return table.CreateQuery<InventoryItemEntity>()
+                        .Where(x => x.PartitionKey == partition)
+                        .WhereRowKeyPrefix(InventoryItemEntity.Prefix).ToList()
+                        .Select(item => new InventoryItemListDto(item.Id, item.Name));
         }
 
         public InventoryItemDetailsDto GetInventoryItemDetails(Guid id)
         {
-            return BullShitDatabase.details[id];
-        }
-    }
+            return table.CreateQuery<InventoryItemEntity>()
+                    .Where(x => x.PartitionKey == partition)
+                    .Where(x => x.RowKey == InventoryItemEntity.EntityRowKey(id)).ToList()
+                    .Select(item => new InventoryItemDetailsDto(item.Id, item.Name, item.CurrentCount, item.Version))
+                    .SingleOrDefault();
 
-    public static class BullShitDatabase
-    {
-        public static Dictionary<Guid, InventoryItemDetailsDto> details = new Dictionary<Guid,InventoryItemDetailsDto>();
-        public static List<InventoryItemListDto> list = new List<InventoryItemListDto>();
+        }
     }
 }

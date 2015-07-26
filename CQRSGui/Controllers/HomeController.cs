@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Web.Mvc;
+
 using SimpleCQRS;
+using Microsoft.WindowsAzure.Storage;
 
 namespace CQRSGui.Controllers
 {
@@ -13,7 +15,12 @@ namespace CQRSGui.Controllers
         public HomeController()
         {
             _bus = ServiceLocator.Bus;
-            _readmodel = new ReadModelFacade();
+
+            var client = CloudStorageAccount.DevelopmentStorageAccount.CreateCloudTableClient();
+            var table = client.GetTableReference("Streams");
+            table.CreateIfNotExists();
+
+            _readmodel = new ReadModelFacade(table, "Items");
         }
 
         public ActionResult Index()

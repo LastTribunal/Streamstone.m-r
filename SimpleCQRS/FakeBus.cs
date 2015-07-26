@@ -1,21 +1,35 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Threading;
+using System.Linq;
+
+using Streamstone;
 
 namespace SimpleCQRS
 {
-    public class FakeBus : ICommandSender, IEventPublisher
+    public class FakeBus : ICommandSender, IProjectionPublisher
     {
-        private readonly Dictionary<Type, List<Action<Message>>> _routes = new Dictionary<Type, List<Action<Message>>>();
+        private readonly Dictionary<Type, Action<Message>> _commandHandlers = 
+                     new Dictionary<Type, Action<Message>>();
 
-        public void RegisterHandler<T>(Action<T> handler) where T : Message
+        private readonly Dictionary<Type, List<Func<Event, IEnumerable<Include>>>> _projectionHandlers =
+                     new Dictionary<Type, List<Func<Event, IEnumerable<Include>>>>();
+
+        public void RegisterCommandHandler<T>(Action<T> handler) where T : Command
         {
-            List<Action<Message>> handlers;
+            if (_commandHandlers.ContainsKey(typeof(T))) 
+                throw new InvalidOperationException("cannot register more than one handler for command " + typeof(T));
 
-            if(!_routes.TryGetValue(typeof(T), out handlers))
+            _commandHandlers.Add(typeof(T), x => handler((T)x));
+        }
+
+        public void RegisterProjectionHandler<T>(Func<T, IEnumerable<Include>> handler) where T : Event
+        {
+            List<Func<Event, IEnumerable<Include>>> handlers;
+
+            if (!_projectionHandlers.TryGetValue(typeof(T), out handlers))
             {
-                handlers = new List<Action<Message>>();
-                _routes.Add(typeof(T), handlers);
+                handlers = new List<Func<Event, IEnumerable<Include>>>();
+                _projectionHandlers.Add(typeof(T), handlers);
             }
 
             handlers.Add((x => handler((T)x)));
@@ -23,46 +37,42 @@ namespace SimpleCQRS
 
         public void Send<T>(T command) where T : Command
         {
-            List<Action<Message>> handlers;
+            Action<Message> handler;
 
-            if (_routes.TryGetValue(typeof(T), out handlers))
-            {
-                if (handlers.Count != 1) throw new InvalidOperationException("cannot send to more than one handler");
-                handlers[0](command);
-            }
-            else
-            {
+            if (!_commandHandlers.TryGetValue(typeof(T), out handler))
                 throw new InvalidOperationException("no handler registered");
-            }
+            
+            handler(command);
         }
 
-        public void Publish<T>(T @event) where T : Event
+        public IEnumerable<Include> Publish<T>(T @event) where T : Event
         {
-            List<Action<Message>> handlers;
+            List<Func<Event, IEnumerable<Include>>> handlers;
 
-            if (!_routes.TryGetValue(@event.GetType(), out handlers)) return;
+            if (!_projectionHandlers.TryGetValue(@event.GetType(), out handlers))
+                return EventIncludes.None;
 
-            foreach(var handler in handlers)
-            {
-                //dispatch on thread pool for added awesomeness
-                var handler1 = handler;
-                ThreadPool.QueueUserWorkItem(x => handler1(@event));
-            }
+            return handlers.Select(handler => handler(@event).ToArray()).SelectMany(x => x);
         }
     }
 
-    public interface Handles<T>
+    public interface Handles<in T> where T : Command
     {
-        void Handle(T message);
+        void Handle(T command);
     }
 
     public interface ICommandSender
     {
         void Send<T>(T command) where T : Command;
-
     }
-    public interface IEventPublisher
+
+    public interface Projects<in T> where T : Event
     {
-        void Publish<T>(T @event) where T : Event;
+        IEnumerable<Include> Project(T @event);
+    }
+
+    public interface IProjectionPublisher
+    {
+        IEnumerable<Include> Publish<T>(T @event) where T : Event;
     }
 }
